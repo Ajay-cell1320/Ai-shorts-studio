@@ -1,0 +1,14 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Montserrat,62,&H00F65CF6,&H00000000,&H80000000,-1,0,1,5,2,2,60,60,100,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:15.00,Default,,0,0,0,,Agar aap apne phone se high-retention YouTube Shorts banana chahte hain, toh yeh 3 secrets dhyan se suno.
+Dialogue: 0,0:00:15.00,0:00:45.00,Default,,0,0,0,,Sabse pehli galti log yeh karte hain ki pehle 3 seconds mein strong hook nahi rakhte. Audience turant swipe kar deti hai.
+Dialogue: 0,0:00:45.00,0:01:30.00,Default,,0,0,0,,Doosra secret hai cloud FFmpeg aur AI captions. Jab har word screen par highlight hota hai, toh watch time double ho jata hai!
