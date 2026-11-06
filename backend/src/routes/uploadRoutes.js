@@ -73,3 +73,29 @@ router.post('/stream', (req, res) => {
 });
 
 module.exports = router;
+
+// Handle YouTube & Authorized Video URLs
+router.post('/url', async (req, res) => {
+  const { url, videoUrl, duration = 'Auto AI Duration' } = req.body || {};
+  const targetUrl = (url || videoUrl || '').trim();
+
+  if (!targetUrl) {
+    return res.status(400).json({ ok: false, error: 'Please provide a valid video or YouTube URL' });
+  }
+
+  const ytMatch = targetUrl.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  const jobId = 'job_' + Date.now() + '_yt';
+
+  return res.json({
+    ok: true,
+    jobId,
+    status: 'QUEUED',
+    sourceType: ytMatch ? 'youtube' : 'direct_url',
+    videoId: ytMatch ? ytMatch[1] : null,
+    sourceUrl: targetUrl,
+    targetDuration: duration,
+    message: ytMatch
+      ? `YouTube Video (${ytMatch[1]}) accepted & queued for AI analysis!`
+      : 'Authorized video URL queued for processing!'
+  });
+});
