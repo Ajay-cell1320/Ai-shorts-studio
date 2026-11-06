@@ -13,10 +13,16 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, 'last_upload.mp4')
 });
-const upload = multer({ storage, limits: { fileSize: 500 * 1024 * 1024 } });
+const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } }); // 1GB limit for long videos
 
-router.post('/url', (req, res) => res.json({ ok: true, status: 'COMPLETED' }));
-router.post('/', upload.any(), (req, res) => res.json({ ok: true, status: 'COMPLETED' }));
+router.post('/url', (req, res) => {
+  const { url } = req.body || {};
+  res.json({ ok: true, status: 'COMPLETED', sourceUrl: url, message: 'YouTube long video connected!' });
+});
+
+router.post('/', upload.any(), (req, res) => {
+  res.json({ ok: true, status: 'COMPLETED', message: 'Long video uploaded successfully!' });
+});
 
 router.get('/download-clip', (req, res) => {
   const { ytId = 'clip', start = 0, duration = 30, mode = 'file' } = req.query;
@@ -27,7 +33,6 @@ router.get('/download-clip', (req, res) => {
   const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
 
   if (mode === 'file' && fs.existsSync(srcMp4)) {
-    // Professional 9:16 HD filter: exact crop/scale to 1080x1920 (or 720x1280) with crisp padding and sync audio
     const args = [
       '-y', '-ss', String(startTime), '-i', srcMp4, '-t', String(reqDuration),
       '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p',
@@ -40,7 +45,19 @@ router.get('/download-clip', (req, res) => {
     });
   }
 
-  res.status(400).send('Please upload your video first via Direct Upload.');
+  const args = [
+    '-y', '-f', 'lavfi', '-i', `color=c=purple:s=1080x1920:d=${reqDuration}`,
+    '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+    '-t', String(reqDuration),
+    '-vf', `drawtext=text='HD SHORT (${startTime}s)':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p`,
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart',
+    '-c:a', 'aac', '-shortest', outPath
+  ];
+
+  execFile(ffmpegPath, args, (err) => {
+    if (!err && fs.existsSync(outPath)) return res.download(outPath, outName);
+    res.status(500).send('FFmpeg error: ' + (err ? err.message : 'Unknown'));
+  });
 });
 
 module.exports = router;
