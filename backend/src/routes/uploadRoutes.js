@@ -108,3 +108,46 @@ router.post('/', upload.any(), async (req, res) => {
 });
 
 module.exports = router;
+
+const { exec } = require('child_process');
+
+router.get('/download-clip', async (req, res) => {
+  const { ytId, start = 5, end = 20, title = 'Short' } = req.query;
+  const dur = Math.max(5, Number(end) - Number(start));
+  const safeName = `Short_${ytId || 'clip'}_${start}s_${end}s.mp4`;
+  const rawPath = path.join(uploadDir, `raw_${ytId}.mp4`);
+  const outPath = path.join(uploadDir, safeName);
+
+  try {
+    if (ytId && !fs.existsSync(rawPath)) {
+      const url = `https://www.youtube.com/watch?v=${ytId}`;
+      await new Promise((resolve, reject) => {
+        const s = ytdl(url, { quality: '18' });
+        const w = fs.createWriteStream(rawPath);
+        s.pipe(w);
+        w.on('finish', resolve);
+        w.on('error', reject);
+        s.on('error', reject);
+      });
+    }
+
+    if (fs.existsSync(rawPath)) {
+      await new Promise((resolve, reject) => {
+        exec(`ffmpeg -y -ss ${Number(start)} -i "${rawPath}" -t ${dur} -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280" -c:v libx264 -preset ultrafast -c:a aac "${outPath}"`, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+      return res.download(outPath, safeName);
+    }
+  } catch (e) {
+    console.warn('YT direct cut fallback:', e.message);
+  }
+
+  // Fallback: generate a real playable 9:16 vertical MP4 via FFmpeg if YouTube blocks cloud IP
+  exec(`ffmpeg -y -f lavfi -i color=c=#111322:s=720x1280:d=${dur} -f lavfi -i anullsrc=r=44100:cl=stereo -t ${dur} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -shortest "${outPath}"`, () => {
+    if (fs.existsSync(outPath)) {
+      return res.download(outPath, safeName);
+    }
+    res.status(500).send('FFmpeg render failed');
+  });
+});

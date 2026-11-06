@@ -111,7 +111,7 @@ export const UploadStudioBox: React.FC<{ onUploadSuccess?: (d: any) => void }> =
               <div className="text-gray-400">Clip: {c.start}s - {c.end}s (15s Short)</div>
               <div className="flex gap-2 pt-1">
                 <button className="flex-1 py-1.5 bg-white/10 rounded-lg font-semibold">▶ Preview 9:16</button>
-                <a href={previewUrl || `https://www.youtube.com/watch?v=${ytId}&t=${c.start}s`} target="_blank" rel="noreferrer" download={`Short_${c.id}.mp4`} className="flex-1 py-1.5 bg-purple-600 rounded-lg font-semibold text-center">⬇ Open / Save</a>
+                <a href={previewUrl || `${API_BASE}/api/uploads/download-clip?ytId=${ytId}&start=${c.start}&end=${c.end}`} target="_blank" rel="noreferrer" download={`Short_${c.id}.mp4`} className="flex-1 py-1.5 bg-purple-600 rounded-lg font-semibold text-center">⬇ Open / Save</a>
               </div>
             </div>
           ))}
