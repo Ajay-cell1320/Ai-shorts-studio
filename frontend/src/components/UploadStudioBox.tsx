@@ -20,14 +20,38 @@ export const UploadStudioBox: React.FC = () => {
     const url = URL.createObjectURL(f);
     setPreviewUrl(url);
 
-    const dur = selectedDuration;
-    const list = [
-      { id: 'c1', title: `🔥 Intro Highlight (${dur}s)`, score: 98, start: 0, duration: dur, cap: 'Incredible start! 🚀 #shorts' },
-      { id: 'c2', title: `⚡ Midpoint Highlight (${dur}s)`, score: 95, start: 30, duration: dur, cap: 'Wait for this moment! 🔥' },
-      { id: 'c3', title: `🎯 Climax Peak (${dur}s)`, score: 92, start: 60, duration: dur, cap: 'Unbelievable ending! 👀✨' }
-    ];
-    setClips(list);
-    setActiveClip(list[0]);
+    // Create temporary video element to read exact file duration
+    const tempVideo = document.createElement('video');
+    tempVideo.src = url;
+    tempVideo.onloadedmetadata = () => {
+      const totalDur = tempVideo.duration;
+      const dur = selectedDuration;
+      
+      // Generate sequential clips across the video duration
+      const generated = [];
+      let start = 0;
+      let index = 1;
+      
+      while (start < totalDur && index <= 5) {
+        const actualDur = Math.min(dur, Math.floor(totalDur - start));
+        if (actualDur < 5) break; // Skip tiny leftover tails
+        
+        generated.push({
+          id: `c_${index}`,
+          title: `🔥 Part ${index} (${actualDur}s Short)`,
+          score: Math.max(85, 99 - index * 3),
+          start: Math.floor(start),
+          duration: actualDur,
+          cap: index === 1 ? 'Incredible start! 🚀 #shorts' : index === 2 ? 'The best part! 🔥 #viral' : 'Mind blowing ending! 👀✨'
+        });
+        
+        start += dur;
+        index++;
+      }
+
+      setClips(generated);
+      if (generated.length > 0) setActiveClip(generated[0]);
+    };
   };
 
   const handleSelectClip = (c: any) => {
@@ -65,7 +89,7 @@ export const UploadStudioBox: React.FC = () => {
         <div className="flex gap-2">
           <input type="url" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="Paste YouTube link..." className="flex-1 bg-[#0b0c16] border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
           <button type="button" onClick={() => {
-            const list = [{ id: 'c1', title: `🔥 YouTube Hook (${selectedDuration}s)`, score: 99, start: 10, duration: selectedDuration, cap: 'Must watch! 🔥 #shorts' }];
+            const list = [{ id: 'c1', title: `🔥 YouTube Hook (${selectedDuration}s)`, score: 99, start: 0, duration: selectedDuration, cap: 'Must watch! 🔥 #shorts' }];
             setClips(list);
             setActiveClip(list[0]);
           }} className="px-5 py-2.5 bg-purple-600 rounded-xl text-sm font-bold">Analyze</button>
@@ -95,27 +119,29 @@ export const UploadStudioBox: React.FC = () => {
             </div>
           </div>
 
-          {clips.map((c) => {
-            const serverCutUrl = `${API_BASE}/api/uploads/download-clip?mode=file&start=${c.start}&duration=${c.duration}`;
-            return (
-              <div key={c.id} onClick={() => handleSelectClip(c)} className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer transition ${activeClip?.id === c.id ? 'border-purple-500 bg-purple-950/40' : 'border-white/10 bg-[#0b0c16]'}`}>
-                <div className="flex justify-between font-bold">
-                  <span>{c.title}</span>
-                  <span className="text-emerald-400">{c.score}% Viral</span>
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {clips.map((c) => {
+              const serverCutUrl = `${API_BASE}/api/uploads/download-clip?mode=file&start=${c.start}&duration=${c.duration}`;
+              return (
+                <div key={c.id} onClick={() => handleSelectClip(c)} className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer transition ${activeClip?.id === c.id ? 'border-purple-500 bg-purple-950/40' : 'border-white/10 bg-[#0b0c16]'}`}>
+                  <div className="flex justify-between font-bold">
+                    <span>{c.title}</span>
+                    <span className="text-emerald-400">{c.score}% Viral</span>
+                  </div>
+                  <div className="text-gray-400">Timestamp: {c.start}s to {c.start + c.duration}s ({c.duration}s Segment)</div>
+                  <a
+                    href={serverCutUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="block w-full py-2 bg-purple-600 rounded-lg font-semibold text-center"
+                  >
+                    ⬇ Download Exact {c.duration}s Short (HD 1080x1920)
+                  </a>
                 </div>
-                <div className="text-gray-400">Start: {c.start}s | Duration: {c.duration}s (Tap to preview exact segment)</div>
-                <a
-                  href={serverCutUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="block w-full py-2 bg-purple-600 rounded-lg font-semibold text-center"
-                >
-                  ⬇ Download Cut {c.duration}s Short (HD 1080x1920)
-                </a>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
