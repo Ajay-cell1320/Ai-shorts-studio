@@ -21,9 +21,9 @@ export const UploadStudioBox: React.FC<{ onUploadSuccess?: (d: any) => void }> =
 
   const makeClips = () => {
     const list = [
-      { id: 'c1', title: '🔥 Viral Opening Hook', score: 98, start: 5, end: 20, cap: 'Wait for the twist! 😂🔥 #shorts' },
-      { id: 'c2', title: '⚡ Best Comedy Peak', score: 94, start: 25, end: 40, cap: 'Best moment from this episode! 💯' },
-      { id: 'c3', title: '🎯 Climax Punchline', score: 91, start: 45, end: 60, cap: 'Unbelievable reaction! 👀✨' }
+      { id: 'c1', title: '🔥 Viral Opening Hook', score: 98, start: 0, end: 5, cap: 'Wait for the twist! 😂🔥 #shorts' },
+      { id: 'c2', title: '⚡ Best Comedy Peak', score: 94, start: 2, end: 8, cap: 'Best moment from this episode! 💯' },
+      { id: 'c3', title: '🎯 Climax Punchline', score: 91, start: 4, end: 10, cap: 'Unbelievable reaction! 👀✨' }
     ];
     setClips(list);
     setActiveClip(list[0]);
