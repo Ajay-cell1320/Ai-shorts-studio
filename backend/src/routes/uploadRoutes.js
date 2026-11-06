@@ -13,7 +13,7 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, 'last_upload.mp4')
 });
-const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } }); // 1GB limit for long videos
+const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } });
 
 router.post('/url', (req, res) => {
   const { url } = req.body || {};
@@ -45,17 +45,20 @@ router.get('/download-clip', (req, res) => {
     });
   }
 
+  // Safe fallback without drawtext filter
   const args = [
     '-y', '-f', 'lavfi', '-i', `color=c=purple:s=1080x1920:d=${reqDuration}`,
     '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
     '-t', String(reqDuration),
-    '-vf', `drawtext=text='HD SHORT (${startTime}s)':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p`,
+    '-vf', 'format=yuv420p',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart',
     '-c:a', 'aac', '-shortest', outPath
   ];
 
   execFile(ffmpegPath, args, (err) => {
-    if (!err && fs.existsSync(outPath)) return res.download(outPath, outName);
+    if (!err && fs.existsSync(outPath)) {
+      return res.download(outPath, outName);
+    }
     res.status(500).send('FFmpeg error: ' + (err ? err.message : 'Unknown'));
   });
 });
