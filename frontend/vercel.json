@@ -3,6 +3,6 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/api/:match*", "destination": "https://your-backend-service.onrender.com/api/:match*" }
+    { "source": "/api/:match*", "destination": "https://YOUR_RENDER_URL_HERE.onrender.com/api/:match*" }
   ]
 }
