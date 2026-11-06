@@ -5,24 +5,13 @@ const apiRoutes = require('./routes/apiRoutes');
 
 const app = express();
 
-const allowedOrigins = [
-  env.frontendUrl,
-  'https://ai-shorts-studio.vercel.app',
-  'http://localhost:5173'
-];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || env.nodeEnv === 'development') {
-      callback(null, true);
-    } else {
-      callback(new Error('Blocked by CORS policy: Unauthorized domain'));
-    }
-  },
+  origin: true,
   credentials: true
 }));
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/api', apiRoutes);
 
 app.listen(env.port, '0.0.0.0', () => {

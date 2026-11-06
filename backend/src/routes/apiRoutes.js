@@ -73,3 +73,6 @@ router.use('/captions', captionRoutes);
 
 const downloadRoutes = require('./downloadRoutes');
 router.use('/downloads', downloadRoutes);
+
+const monetizationRoutes = require('./monetizationRoutes');
+router.use('/monetization', monetizationRoutes);
