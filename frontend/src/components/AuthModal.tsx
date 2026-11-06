@@ -19,7 +19,7 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:4000/api/auth/${mode}`, {
+      const res = await fetch(`https://magicshorts.onrender.com/api/auth/${mode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password })
