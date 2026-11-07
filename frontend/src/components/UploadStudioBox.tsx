@@ -41,7 +41,7 @@ export const UploadStudioBox: React.FC = () => {
   const uploadOnceInBackground = (f: File) => {
     setServerHasFile(false);
     setUploadPct(1);
-    setStatusMsg('⏳ Uploading video once in background... Once at 100%, all downloads are instant!');
+    setStatusMsg('⏳ Caching video on server... Once at 100%, multi-downloads are instant!');
     const fd = new FormData();
     fd.append('video', f);
 
@@ -54,7 +54,7 @@ export const UploadStudioBox: React.FC = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         setServerHasFile(true);
         setUploadPct(100);
-        setStatusMsg('⚡ Video Cached on Server! You can now download multiple Shorts at the same time!');
+        setStatusMsg('⚡ Server Ready! Tap as many Shorts as you want — they will queue & download cleanly!');
       }
     };
     xhr.send(fd);
@@ -75,54 +75,67 @@ export const UploadStudioBox: React.FC = () => {
     uploadOnceInBackground(f);
   };
 
+  const saveValidVideoBlob = (blob: Blob, outFileName: string) => {
+    const mp4Blob = new Blob([blob], { type: 'video/mp4' });
+    const blobUrl = URL.createObjectURL(mp4Blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = outFileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+  };
+
   const triggerClipDownload = async (c: any) => {
-    if (!file) return;
+    if (!file || downloadingIds[c.id]) return;
     setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
     const outFileName = `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`;
 
     try {
-      // Fast GET cut (no re-upload!)
       const res = await fetch(`${API_BASE}/api/uploads/cut-fast?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`);
       if (res.ok) {
         const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = outFileName;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
-        return;
+        if (blob.size > 10240) {
+          saveValidVideoBlob(blob, outFileName);
+          setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
+          setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
+          return;
+        }
       }
     } catch {}
 
-    // Fallback if server restarted
-    const fd = new FormData();
-    fd.append('video', file);
-    const res2 = await fetch(`${API_BASE}/api/uploads/cut-direct?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`, {
-      method: 'POST',
-      body: fd
-    });
-    if (res2.ok) {
-      setServerHasFile(true);
-      const blob = await res2.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = outFileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    // Fallback upload & cut
+    try {
+      const fd = new FormData();
+      fd.append('video', file);
+      const res2 = await fetch(`${API_BASE}/api/uploads/cut-direct?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`, {
+        method: 'POST',
+        body: fd
+      });
+      if (res2.ok) {
+        const blob = await res2.blob();
+        if (blob.size > 10240) {
+          setServerHasFile(true);
+          saveValidVideoBlob(blob, outFileName);
+          setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
+        } else {
+          setStatusMsg('⚠️ Server returned an incomplete file. Please tap Download again.');
+        }
+      }
+    } catch {
+      setStatusMsg('⚠️ Network error while cutting. Tap Download again.');
     }
     setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
   };
 
-  const handleDownloadAll = () => {
-    clips.forEach((c, idx) => {
-      setTimeout(() => triggerClipDownload(c), idx * 600);
-    });
+  const handleDownloadAll = async () => {
+    setStatusMsg('🚀 Queued all Shorts for download! Each clip will save as soon as it finishes encoding...');
+    for (const c of clips) {
+      await triggerClipDownload(c);
+    }
   };
+
   return (
     <div className="bg-[#111322] border border-white/10 rounded-2xl p-4 text-white space-y-4">
       <div className="space-y-1.5">
@@ -157,7 +170,7 @@ export const UploadStudioBox: React.FC = () => {
             <div className="bg-purple-500 h-full transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
           <div className="flex justify-between text-gray-300">
-            <span>Background Server Cache: {uploadPct}%</span>
+            <span>Server Cache Upload: {uploadPct}%</span>
             <button type="button" onClick={() => uploadOnceInBackground(file)} className="text-purple-400 underline">Retry</button>
           </div>
         </div>
@@ -183,7 +196,7 @@ export const UploadStudioBox: React.FC = () => {
             onClick={handleDownloadAll}
             className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl text-xs font-extrabold shadow-lg"
           >
-            🚀 Download All {clips.length} Shorts Simultaneously
+            🚀 Download All {clips.length} Shorts (Auto-Queued)
           </button>
 
           {clips.map((c) => {
@@ -202,7 +215,7 @@ export const UploadStudioBox: React.FC = () => {
                     isBusy ? 'bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
                 >
-                  {isBusy ? '⚡ Cutting & Downloading...' : `⬇ Fast Download ${c.duration}s Short (${ratioMode.toUpperCase()})`}
+                  {isBusy ? '⚡ Queued & Cutting MP4...' : `⬇ Fast Download ${c.duration}s Short (${ratioMode.toUpperCase()})`}
                 </button>
               </div>
             );
