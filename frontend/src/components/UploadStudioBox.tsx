@@ -156,8 +156,8 @@ export const UploadStudioBox: React.FC = () => {
               </div>
               <div className="text-gray-400">Segment: {c.start}s to {c.start + c.duration}s ({c.duration}s)</div>
               {uploadedOnServer ? (
-                <a href={`${API_BASE}/api/uploads/download-clip?start=${c.start}&duration=${c.duration}&ratio=zoom`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="block w-full py-2 bg-emerald-600 rounded-lg font-bold text-center text-white">
-                  📱 Download Full 9:16 Zoom MP4
+                <a href={`${API_BASE}/api/uploads/download-clip?start=${c.start}&duration=${c.duration}&ratio=smart`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="block w-full py-2 bg-emerald-600 rounded-lg font-bold text-center text-white">
+                  ✨ Download Smart 9:16 HD Fit (1080p)
                 </a>
               ) : (
                 <button type="button" disabled className="w-full py-2 bg-gray-700 text-gray-400 rounded-lg font-semibold">
