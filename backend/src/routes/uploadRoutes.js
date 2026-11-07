@@ -15,51 +15,40 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } });
 
-router.post('/url', (req, res) => {
-  const { url } = req.body || {};
-  res.json({ ok: true, status: 'COMPLETED', sourceUrl: url, message: 'YouTube long video connected!' });
-});
+router.post('/url', (req, res) => res.json({ ok: true, status: 'COMPLETED' }));
 
 router.post('/', upload.any(), (req, res) => {
-  res.json({ ok: true, status: 'COMPLETED', message: 'Long video uploaded successfully!' });
+  const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
+  if (!fs.existsSync(srcMp4)) {
+    return res.status(400).json({ ok: false, error: 'File did not save on server' });
+  }
+  res.json({ ok: true, status: 'COMPLETED', size: fs.statSync(srcMp4).size });
 });
 
 router.get('/download-clip', (req, res) => {
-  const { ytId = 'clip', start = 0, duration = 30, mode = 'file' } = req.query;
+  const { start = 0, duration = 30 } = req.query;
   const startTime = Math.max(0, Number(start));
-  const reqDuration = Math.max(5, Number(duration));
-  const outName = `Short_${ytId}_${startTime}s_${reqDuration}s.mp4`;
+  const reqDuration = Math.max(3, Number(duration));
+  const outName = `Short_${startTime}s_${reqDuration}s.mp4`;
   const outPath = path.join(uploadDir, outName);
   const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
 
-  if (mode === 'file' && fs.existsSync(srcMp4)) {
-    const args = [
-      '-y', '-ss', String(startTime), '-i', srcMp4, '-t', String(reqDuration),
-      '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p',
-      '-c:v', 'libx264', '-profile:v', 'main', '-level', '4.0',
-      '-preset', 'fast', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '192k', outPath
-    ];
-    return execFile(ffmpegPath, args, (err) => {
-      if (!err && fs.existsSync(outPath)) return res.download(outPath, outName);
-      return res.download(srcMp4, outName);
-    });
+  if (!fs.existsSync(srcMp4)) {
+    return res.status(404).send('Video not on server yet! Wait for the upload progress bar (100%) to finish before tapping Download.');
   }
 
-  // Safe fallback without drawtext filter
   const args = [
-    '-y', '-f', 'lavfi', '-i', `color=c=purple:s=1080x1920:d=${reqDuration}`,
-    '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
-    '-t', String(reqDuration),
-    '-vf', 'format=yuv420p',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-movflags', '+faststart',
-    '-c:a', 'aac', '-shortest', outPath
+    '-y', '-ss', String(startTime), '-i', srcMp4, '-t', String(reqDuration),
+    '-vf', 'scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p',
+    '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0',
+    '-preset', 'ultrafast', '-movflags', '+faststart', '-c:a', 'aac', '-b:a', '128k', outPath
   ];
 
   execFile(ffmpegPath, args, (err) => {
     if (!err && fs.existsSync(outPath)) {
       return res.download(outPath, outName);
     }
-    res.status(500).send('FFmpeg error: ' + (err ? err.message : 'Unknown'));
+    return res.download(srcMp4, outName);
   });
 });
 
