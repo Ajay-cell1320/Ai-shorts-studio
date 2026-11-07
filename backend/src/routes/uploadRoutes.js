@@ -15,20 +15,14 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } });
 
-let isEncoding = false; // Strict single-job server lock
-
 function runFastFfmpegCut(srcMp4, start, duration, ratio, res) {
-  if (isEncoding) {
-    return res.status(429).send('Busy cutting another Short. Please wait for the current download to finish.');
-  }
-  isEncoding = true;
-
   const startTime = Math.max(0, Number(start) || 0);
   const reqDuration = Math.max(3, Number(duration) || 30);
-  const outName = `Short_${ratio}_${startTime}s_${reqDuration}s.mp4`;
+  // Unique filename with random ID so multiple parallel downloads never overwrite each other
+  const uniqueId = Math.random().toString(36).substring(2, 7);
+  const outName = `Short_${ratio}_${startTime}s_${reqDuration}s_${uniqueId}.mp4`;
   const outPath = path.join(uploadDir, outName);
 
-  // Ultra-fast 9:16 filters (downscales background before blurring = 8x faster CPU speed)
   let vfFilter = '';
   if (ratio === 'fullfit') {
     vfFilter = 'split[bg][fg];[bg]scale=90:160:force_original_aspect_ratio=increase,crop=90:160,boxblur=3:1,scale=720:1280[bgblur];[fg]scale=720:-2[fgscale];[bgblur][fgscale]overlay=(W-w)/2:(H-h)/2,format=yuv420p';
@@ -38,33 +32,38 @@ function runFastFfmpegCut(srcMp4, start, duration, ratio, res) {
     vfFilter = 'split[bg][fg];[bg]scale=90:160:force_original_aspect_ratio=increase,crop=90:160,boxblur=3:1,scale=720:1280[bgblur];[fg]scale=-2:920,crop=720:920[fgcrop];[bgblur][fgcrop]overlay=0:(H-h)/2,format=yuv420p';
   }
 
-  // Put -ss BEFORE -i for instant keyframe seeking (0s wait on 30-min videos)
   const args = [
     '-y', '-ss', String(startTime), '-i', srcMp4, '-t', String(reqDuration),
     '-vf', vfFilter,
-    '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.1', '-crf', '25',
-    '-preset', 'ultrafast', '-threads', '2', '-movflags', '+faststart',
+    '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.1', '-crf', '26',
+    '-preset', 'ultrafast', '-movflags', '+faststart',
     '-c:a', 'aac', '-b:a', '128k', outPath
   ];
 
   execFile(ffmpegPath, args, (err) => {
-    isEncoding = false;
-    if (!err && fs.existsSync(outPath)) return res.download(outPath, outName);
+    if (!err && fs.existsSync(outPath)) {
+      return res.download(outPath, `Short_${ratio}_${startTime}s_${reqDuration}s.mp4`, () => {
+        try { fs.unlinkSync(outPath); } catch {}
+      });
+    }
     return res.status(500).send('FFmpeg cut error');
   });
 }
 
-// Fast cut using already-uploaded file on server (Zero re-upload delay!)
+router.post('/', upload.any(), (req, res) => {
+  const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
+  if (!fs.existsSync(srcMp4)) return res.status(400).json({ ok: false });
+  res.json({ ok: true, status: 'COMPLETED' });
+});
+
+// Parallel fast cut endpoint (can be called multiple times at once!)
 router.get('/cut-fast', (req, res) => {
   const { start = 0, duration = 30, ratio = 'smart' } = req.query;
   const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
-  if (!fs.existsSync(srcMp4)) {
-    return res.status(404).send('NEED_UPLOAD');
-  }
+  if (!fs.existsSync(srcMp4)) return res.status(404).send('NEED_UPLOAD');
   runFastFfmpegCut(srcMp4, start, duration, ratio, res);
 });
 
-// Fallback: uploads file once and cuts immediately
 router.post('/cut-direct', upload.any(), (req, res) => {
   const { start = 0, duration = 30, ratio = 'smart' } = req.query;
   const srcMp4 = path.join(uploadDir, 'last_upload.mp4');

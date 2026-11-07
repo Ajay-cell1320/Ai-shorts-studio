@@ -7,8 +7,8 @@ export const UploadStudioBox: React.FC = () => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(30);
   const [ratioMode, setRatioMode] = useState<'smart' | 'fullfit' | 'zoom'>('smart');
-  const [cuttingId, setCuttingId] = useState<string | null>(null);
-  const [cutPct, setCutPct] = useState<number>(0);
+  const [downloadingIds, setDownloadingIds] = useState<Record<string, boolean>>({});
+  const [uploadPct, setUploadPct] = useState<number>(0);
   const [serverHasFile, setServerHasFile] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [clips, setClips] = useState<any[]>([]);
@@ -25,7 +25,7 @@ export const UploadStudioBox: React.FC = () => {
       if (actualDur < 3 && i > 1) break;
       generated.push({
         id: `c_${i}`,
-        title: i === 1 ? `🔥 Opening Hook (${actualDur || dur}s)` : i === 2 ? `⚡ Peak Comedy / Action (${actualDur || dur}s)` : `🎯 Climax Scene (${actualDur || dur}s)`,
+        title: `🔥 Short #${i} (${actualDur || dur}s)`,
         score: Math.max(88, 99 - i * 2),
         start: Math.floor(start),
         duration: actualDur || dur,
@@ -38,11 +38,32 @@ export const UploadStudioBox: React.FC = () => {
     if (generated.length > 0) setActiveClip(generated[0]);
   };
 
+  const uploadOnceInBackground = (f: File) => {
+    setServerHasFile(false);
+    setUploadPct(1);
+    setStatusMsg('⏳ Uploading video once in background... Once at 100%, all downloads are instant!');
+    const fd = new FormData();
+    fd.append('video', f);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/api/uploads`, true);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setUploadPct(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setServerHasFile(true);
+        setUploadPct(100);
+        setStatusMsg('⚡ Video Cached on Server! You can now download multiple Shorts at the same time!');
+      }
+    };
+    xhr.send(fd);
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
     setFile(f);
-    setServerHasFile(false);
     const url = URL.createObjectURL(f);
     setPreviewUrl(url);
 
@@ -50,72 +71,57 @@ export const UploadStudioBox: React.FC = () => {
     tempVideo.src = url;
     tempVideo.onloadedmetadata = () => {
       generateSequentialClips(tempVideo.duration || 60, selectedDuration);
-      setStatusMsg('✅ Video ready! Only 1 download at a time is allowed for maximum speed.');
     };
+    uploadOnceInBackground(f);
   };
 
-  const saveBlob = (blob: Blob, filename: string) => {
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
-
-  const handleSingleDownload = async (c: any) => {
-    if (!file || cuttingId !== null) return; // Strict 1-at-a-time lock
-    setCuttingId(c.id);
+  const triggerClipDownload = async (c: any) => {
+    if (!file) return;
+    setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
     const outFileName = `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`;
 
-    // 1. If file is already cached on server, cut in 2-4 seconds without re-uploading!
-    if (serverHasFile) {
-      setCutPct(100);
-      setStatusMsg(`⚡ Instant Server Cut (${c.duration}s)... No re-upload needed!`);
-      try {
-        const res = await fetch(`${API_BASE}/api/uploads/cut-fast?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`);
-        if (res.ok) {
-          const blob = await res.blob();
-          saveBlob(blob, outFileName);
-          setCuttingId(null);
-          setStatusMsg('✅ Downloaded in seconds!');
-          return;
-        }
-      } catch {}
-    }
+    try {
+      // Fast GET cut (no re-upload!)
+      const res = await fetch(`${API_BASE}/api/uploads/cut-fast?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = outFileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
+        return;
+      }
+    } catch {}
 
-    // 2. First download (or if Render restarted): upload once & cut
-    setCutPct(1);
-    setStatusMsg(`⏳ Uploading once & cutting ${c.duration}s Short... (Next clips will be instant!)`);
+    // Fallback if server restarted
     const fd = new FormData();
     fd.append('video', file);
+    const res2 = await fetch(`${API_BASE}/api/uploads/cut-direct?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`, {
+      method: 'POST',
+      body: fd
+    });
+    if (res2.ok) {
+      setServerHasFile(true);
+      const blob = await res2.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = outFileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
+  };
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/api/uploads/cut-direct?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`, true);
-    xhr.responseType = 'blob';
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setCutPct(Math.round((e.loaded / e.total) * 100));
-    };
-
-    xhr.onload = () => {
-      setCuttingId(null);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setServerHasFile(true);
-        saveBlob(xhr.response, outFileName);
-        setStatusMsg('✅ Downloaded! Server cached your video — your next Short download will take only 3 seconds!');
-      } else {
-        setStatusMsg('❌ Server busy or waking up. Try again in 5 seconds.');
-      }
-    };
-
-    xhr.onerror = () => {
-      setCuttingId(null);
-      setStatusMsg('⚠️ Network interrupted. Tap Download again.');
-    };
-
-    xhr.send(fd);
+  const handleDownloadAll = () => {
+    clips.forEach((c, idx) => {
+      setTimeout(() => triggerClipDownload(c), idx * 600);
+    });
   };
   return (
     <div className="bg-[#111322] border border-white/10 rounded-2xl p-4 text-white space-y-4">
@@ -123,10 +129,10 @@ export const UploadStudioBox: React.FC = () => {
         <label className="text-xs font-bold text-gray-400">1. Choose Short Duration:</label>
         <div className="grid grid-cols-5 gap-1.5 bg-[#0b0c16] p-1.5 rounded-xl">
           {[15, 30, 45, 60, 90].map((sec) => (
-            <button key={sec} type="button" disabled={cuttingId !== null} onClick={() => {
+            <button key={sec} type="button" onClick={() => {
               setSelectedDuration(sec);
               if (videoRef.current?.duration) generateSequentialClips(videoRef.current.duration, sec);
-            }} className={`py-2 rounded-lg text-xs font-bold ${selectedDuration === sec ? 'bg-purple-600' : 'text-gray-400'} disabled:opacity-40`}>{sec}s</button>
+            }} className={`py-2 rounded-lg text-xs font-bold ${selectedDuration === sec ? 'bg-purple-600' : 'text-gray-400'}`}>{sec}s</button>
           ))}
         </div>
       </div>
@@ -134,16 +140,28 @@ export const UploadStudioBox: React.FC = () => {
       <div className="space-y-1.5">
         <label className="text-xs font-bold text-gray-400">2. Choose 9:16 Screen Fit:</label>
         <div className="grid grid-cols-3 gap-1.5 bg-[#0b0c16] p-1.5 rounded-xl">
-          <button type="button" disabled={cuttingId !== null} onClick={() => setRatioMode('smart')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'smart' ? 'bg-purple-600' : 'text-gray-400'}`}>✨ Smart 9:16 Fit</button>
-          <button type="button" disabled={cuttingId !== null} onClick={() => setRatioMode('fullfit')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'fullfit' ? 'bg-purple-600' : 'text-gray-400'}`}>🖼 Full Width Blur</button>
-          <button type="button" disabled={cuttingId !== null} onClick={() => setRatioMode('zoom')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'zoom' ? 'bg-purple-600' : 'text-gray-400'}`}>📱 Full Zoom</button>
+          <button type="button" onClick={() => setRatioMode('smart')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'smart' ? 'bg-purple-600' : 'text-gray-400'}`}>✨ Smart 9:16 Fit</button>
+          <button type="button" onClick={() => setRatioMode('fullfit')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'fullfit' ? 'bg-purple-600' : 'text-gray-400'}`}>🖼 Full Width Blur</button>
+          <button type="button" onClick={() => setRatioMode('zoom')} className={`py-2 rounded-lg text-[11px] font-bold ${ratioMode === 'zoom' ? 'bg-purple-600' : 'text-gray-400'}`}>📱 Full Zoom</button>
         </div>
       </div>
 
       <input ref={fileRef} type="file" accept="video/mp4,video/*" className="hidden" onChange={handleFileSelect} />
-      <button type="button" disabled={cuttingId !== null} onClick={() => fileRef.current?.click()} className="w-full py-3.5 border border-dashed border-purple-500 rounded-xl text-xs disabled:opacity-40">
+      <button type="button" onClick={() => fileRef.current?.click()} className="w-full py-3.5 border border-dashed border-purple-500 rounded-xl text-xs">
         {file ? `${file.name} (${(file.size / 1048576).toFixed(1)} MB)` : 'Tap to choose your MP4 video'}
       </button>
+
+      {file && !serverHasFile && (
+        <div className="space-y-1 text-xs">
+          <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
+            <div className="bg-purple-500 h-full transition-all" style={{ width: `${uploadPct}%` }} />
+          </div>
+          <div className="flex justify-between text-gray-300">
+            <span>Background Server Cache: {uploadPct}%</span>
+            <button type="button" onClick={() => uploadOnceInBackground(file)} className="text-purple-400 underline">Retry</button>
+          </div>
+        </div>
+      )}
 
       {statusMsg && <div className="p-2.5 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs">{statusMsg}</div>}
 
@@ -160,11 +178,18 @@ export const UploadStudioBox: React.FC = () => {
             </div>
           </div>
 
+          <button
+            type="button"
+            onClick={handleDownloadAll}
+            className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl text-xs font-extrabold shadow-lg"
+          >
+            🚀 Download All {clips.length} Shorts Simultaneously
+          </button>
+
           {clips.map((c) => {
-            const isThisCutting = cuttingId === c.id;
-            const isOtherCutting = cuttingId !== null && cuttingId !== c.id;
+            const isBusy = !!downloadingIds[c.id];
             return (
-              <div key={c.id} onClick={() => { if (!cuttingId) { setActiveClip(c); if (videoRef.current) { videoRef.current.currentTime = c.start; videoRef.current.play(); } } }} className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer ${activeClip?.id === c.id ? 'border-purple-500 bg-purple-950/40' : 'border-white/10 bg-[#0b0c16]'}`}>
+              <div key={c.id} onClick={() => { setActiveClip(c); if (videoRef.current) { videoRef.current.currentTime = c.start; videoRef.current.play(); } }} className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer ${activeClip?.id === c.id ? 'border-purple-500 bg-purple-950/40' : 'border-white/10 bg-[#0b0c16]'}`}>
                 <div className="flex justify-between font-bold">
                   <span>{c.title}</span>
                   <span className="text-emerald-400">{c.score}% Viral</span>
@@ -172,19 +197,12 @@ export const UploadStudioBox: React.FC = () => {
                 <div className="text-gray-400">Segment: {c.start}s to {c.start + c.duration}s ({c.duration}s)</div>
                 <button
                   type="button"
-                  disabled={cuttingId !== null}
-                  onClick={(e) => { e.stopPropagation(); handleSingleDownload(c); }}
+                  onClick={(e) => { e.stopPropagation(); triggerClipDownload(c); }}
                   className={`w-full py-2.5 rounded-lg font-bold text-center text-white transition ${
-                    isThisCutting ? 'bg-amber-600' : isOtherCutting ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500'
+                    isBusy ? 'bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
                 >
-                  {isThisCutting
-                    ? `⏳ ${cutPct < 100 ? `Uploading ${cutPct}%...` : 'Fast Cutting 9:16 MP4...'}`
-                    : isOtherCutting
-                    ? '🔒 Single Download Active — Wait...'
-                    : serverHasFile
-                    ? `⚡ Instant Cut & Download ${c.duration}s Short (3s)`
-                    : `⬇ Cut & Download ${c.duration}s Short`}
+                  {isBusy ? '⚡ Cutting & Downloading...' : `⬇ Fast Download ${c.duration}s Short (${ratioMode.toUpperCase()})`}
                 </button>
               </div>
             );
