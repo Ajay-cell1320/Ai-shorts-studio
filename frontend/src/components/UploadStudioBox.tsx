@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 
 const API_BASE = 'https://magicshorts.onrender.com';
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks so large 86MB+ files never stall at 1%
+const CHUNK_SIZE = 512 * 1024; // 512KB micro-chunks so progress updates every second even at 50KB/s!
 
 export const UploadStudioBox: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -39,14 +39,29 @@ export const UploadStudioBox: React.FC = () => {
     if (generated.length > 0) setActiveClip(generated[0]);
   };
 
+  const sendChunkWithProgress = (chunkBlob: Blob, fileName: string, index: number, onChunkProgress: (loaded: number) => void) => {
+    return new Promise<boolean>((resolve) => {
+      const fd = new FormData();
+      fd.append('chunk', chunkBlob, fileName);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/api/uploads/chunk?index=${index}`, true);
+      xhr.timeout = 45000;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onChunkProgress(e.loaded);
+      };
+      xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+      xhr.onerror = () => resolve(false);
+      xhr.ontimeout = () => resolve(false);
+      xhr.send(fd);
+    });
+  };
+
   const uploadInChunks = async (f: File) => {
     setServerHasFile(false);
     setUploadPct(1);
-    setStatusMsg('⚡ Waking up cloud server...');
+    setStatusMsg('⚡ Connecting to server (or use Instant Phone Cut below with 0% upload!)...');
 
-    try {
-      await fetch(`${API_BASE}/api/uploads/ping`);
-    } catch {}
+    try { await fetch(`${API_BASE}/api/uploads/ping`); } catch {}
 
     const totalChunks = Math.ceil(f.size / CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
@@ -54,36 +69,22 @@ export const UploadStudioBox: React.FC = () => {
       const endByte = Math.min(f.size, startByte + CHUNK_SIZE);
       const chunkBlob = f.slice(startByte, endByte);
 
-      const fd = new FormData();
-      fd.append('chunk', chunkBlob, f.name);
+      const ok = await sendChunkWithProgress(chunkBlob, f.name, i, (loadedInChunk) => {
+        const totalUploadedBytes = startByte + loadedInChunk;
+        const exactPct = Math.max(1, Math.min(99, Math.round((totalUploadedBytes / f.size) * 100)));
+        setUploadPct(exactPct);
+        setStatusMsg(`⏳ Cloud Sync: ${(totalUploadedBytes / 1048576).toFixed(1)} MB / ${(f.size / 1048576).toFixed(1)} MB (${exactPct}%)`);
+      });
 
-      setStatusMsg(`⏳ Uploading part ${i + 1} of ${totalChunks} (${Math.round(((i + 0.5) / totalChunks) * 100)}%)...`);
-
-      let success = false;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const res = await fetch(`${API_BASE}/api/uploads/chunk?index=${i}`, {
-            method: 'POST',
-            body: fd
-          });
-          if (res.ok) {
-            success = true;
-            break;
-          }
-        } catch {}
-      }
-
-      if (!success) {
-        setStatusMsg('❌ Network drop during chunk upload. Tap Retry below.');
+      if (!ok) {
+        setStatusMsg('⚠️ Slow mobile upload paused. Use "⚡ Instant Phone Cut (No Upload)" below!');
         return;
       }
-
-      setUploadPct(Math.round(((i + 1) / totalChunks) * 100));
     }
 
     setServerHasFile(true);
     setUploadPct(100);
-    setStatusMsg('✅ 100% Uploaded! Tap any Short below to cut & download in seconds!');
+    setStatusMsg('✅ 100% Cloud Synced! Both Cloud FFmpeg & Instant Phone Cut are ready.');
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,8 +102,7 @@ export const UploadStudioBox: React.FC = () => {
     uploadInChunks(f);
   };
   const saveValidVideoBlob = (blob: Blob, outFileName: string) => {
-    const mp4Blob = new Blob([blob], { type: 'video/mp4' });
-    const blobUrl = URL.createObjectURL(mp4Blob);
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = blobUrl;
     a.download = outFileName;
@@ -112,14 +112,103 @@ export const UploadStudioBox: React.FC = () => {
     setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
   };
 
+  // Cuts 9:16 vertical video + burns yellow caption locally on phone with ZERO internet upload!
+  const cutLocallyOnPhone = async (c: any) => {
+    if (!previewUrl || downloadingIds[c.id]) return;
+    setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
+    setStatusMsg(`📱 Cutting 9:16 Short #${c.id} directly on your phone (Zero internet upload)...`);
+
+    const vid = document.createElement('video');
+    vid.src = previewUrl;
+    vid.muted = false;
+    vid.playsInline = true;
+    await new Promise((r) => { vid.onloadedmetadata = r; });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 720;
+    canvas.height = 1280;
+    const ctx = canvas.getContext('2d')!;
+
+    const stream = (canvas as any).captureStream(30);
+    try {
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaElementSource(vid);
+      const dest = audioCtx.createMediaStreamDestination();
+      source.connect(dest);
+      source.connect(audioCtx.destination);
+      dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
+    } catch {}
+
+    const mime = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm';
+    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000 });
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+    vid.currentTime = c.start;
+    await new Promise((r) => { vid.onseeked = r; });
+
+    recorder.start(200);
+    await vid.play();
+
+    const drawFrame = () => {
+      if (vid.paused || vid.ended || vid.currentTime >= c.start + c.duration) {
+        if (recorder.state === 'recording') recorder.stop();
+        vid.pause();
+        return;
+      }
+      // Background fill
+      ctx.fillStyle = '#0b0c16';
+      ctx.fillRect(0, 0, 720, 1280);
+      ctx.filter = 'blur(18px) brightness(0.45)';
+      ctx.drawImage(vid, -180, 0, 1080, 1280);
+      ctx.filter = 'none';
+
+      // Foreground 9:16 framing
+      const vw = vid.videoWidth || 1280;
+      const vh = vid.videoHeight || 720;
+      if (ratioMode === 'zoom') {
+        const s = Math.max(720 / vw, 1280 / vh);
+        ctx.drawImage(vid, (720 - vw * s) / 2, (1280 - vh * s) / 2, vw * s, vh * s);
+      } else if (ratioMode === 'fullfit') {
+        const s = 720 / vw;
+        ctx.drawImage(vid, 0, (1280 - vh * s) / 2, 720, vh * s);
+      } else {
+        const targetH = 900;
+        const s = targetH / vh;
+        ctx.drawImage(vid, (720 - vw * s) / 2, (1280 - targetH) / 2, vw * s, targetH);
+      }
+
+      // Burned-in viral caption bar
+      ctx.fillStyle = 'rgba(0,0,0,0.82)';
+      ctx.fillRect(40, 1040, 640, 64);
+      ctx.fillStyle = '#fde047';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(c.cap, 360, 1080);
+
+      requestAnimationFrame(drawFrame);
+    };
+    drawFrame();
+
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => {
+        const ext = mime.includes('mp4') ? 'mp4' : 'mp4';
+        const outBlob = new Blob(chunks, { type: mime });
+        saveValidVideoBlob(outBlob, `Short_9x16_${c.start}s_${c.duration}s.${ext}`);
+        setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
+        setStatusMsg(`✅ Saved 9:16 Short with burned captions directly on your phone!`);
+        resolve();
+      };
+    });
+  };
+
   const triggerClipDownload = async (c: any) => {
     if (!file || downloadingIds[c.id]) return;
     if (!serverHasFile) {
-      await uploadInChunks(file);
+      return cutLocallyOnPhone(c);
     }
     setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
     const outFileName = `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`;
-
     try {
       const res = await fetch(`${API_BASE}/api/uploads/cut-fast?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`);
       if (res.ok) {
@@ -127,26 +216,11 @@ export const UploadStudioBox: React.FC = () => {
         if (blob.size > 10240) {
           saveValidVideoBlob(blob, outFileName);
           setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
-        } else {
-          setStatusMsg('⚠️ Invalid clip size. Please tap Download again.');
         }
-      } else {
-        setServerHasFile(false);
-        setStatusMsg('⚠️ Server restarted. Re-uploading chunks now...');
-        await uploadInChunks(file);
       }
-    } catch {
-      setStatusMsg('⚠️ Network error while cutting. Tap Download again.');
-    }
+    } catch {}
     setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
   };
-
-  const handleDownloadAll = async () => {
-    for (const c of clips) {
-      await triggerClipDownload(c);
-    }
-  };
-
   return (
     <div className="bg-[#111322] border border-white/10 rounded-2xl p-4 text-white space-y-4">
       <div className="space-y-1.5">
@@ -181,8 +255,8 @@ export const UploadStudioBox: React.FC = () => {
             <div className="bg-purple-500 h-full transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
           <div className="flex justify-between text-gray-300">
-            <span>Chunked Upload Progress: {uploadPct}%</span>
-            <button type="button" onClick={() => uploadInChunks(file)} className="text-purple-400 underline">Retry</button>
+            <span>Cloud Upload Progress: {uploadPct}%</span>
+            <button type="button" onClick={() => uploadInChunks(file)} className="text-purple-400 underline">Retry Cloud</button>
           </div>
         </div>
       )}
@@ -202,14 +276,6 @@ export const UploadStudioBox: React.FC = () => {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={handleDownloadAll}
-            className="w-full py-3 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl text-xs font-extrabold shadow-lg"
-          >
-            🚀 Download All {clips.length} Shorts (Auto-Queued)
-          </button>
-
           {clips.map((c) => {
             const isBusy = !!downloadingIds[c.id];
             return (
@@ -226,7 +292,11 @@ export const UploadStudioBox: React.FC = () => {
                     isBusy ? 'bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
                 >
-                  {isBusy ? '⚡ Queued & Cutting MP4...' : `⬇ Fast Download ${c.duration}s Short (${ratioMode.toUpperCase()})`}
+                  {isBusy
+                    ? '⚡ Cutting 9:16 Video Now...'
+                    : serverHasFile
+                    ? `⬇ Cloud FFmpeg Cut (${c.duration}s)`
+                    : `⚡ Instant Phone Cut ${c.duration}s (No Upload Wait!)`}
                 </button>
               </div>
             );
