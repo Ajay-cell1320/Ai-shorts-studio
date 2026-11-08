@@ -9,19 +9,34 @@ const router = express.Router();
 const uploadDir = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Save to a temporary incoming file first, then atomically rename so FFmpeg never reads a half-written file
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, `upload_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp4`)
-});
-const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 } });
-
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const srcMp4 = path.join(uploadDir, 'last_upload.mp4');
 
-// Sequential Promise Queue so multiple downloads never crash Render RAM or corrupt MP4 headers
+// 1. Instant wake-up ping so Render is 100% awake before upload starts
+router.get('/ping', (req, res) => {
+  res.json({ ok: true, awake: true });
+});
+
+// 2. Reliable 4MB Chunked Upload endpoint (never gets stuck at 1%)
+router.post('/chunk', upload.single('chunk'), (req, res) => {
+  const { index = 0 } = req.query;
+  if (!req.file || !req.file.buffer) {
+    return res.status(400).json({ ok: false, error: 'Missing chunk' });
+  }
+  try {
+    if (Number(index) === 0 && fs.existsSync(srcMp4)) {
+      fs.unlinkSync(srcMp4);
+    }
+    fs.appendFileSync(srcMp4, req.file.buffer);
+    res.json({ ok: true, index: Number(index), totalSize: fs.statSync(srcMp4).size });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 let encodeQueue = Promise.resolve();
 
-function enqueueCutJob(inputFile, start, duration, ratio, res, cleanupInput = false) {
+function enqueueCutJob(inputFile, start, duration, ratio, res) {
   encodeQueue = encodeQueue.then(() => new Promise((resolve) => {
     const startTime = Math.max(0, Number(start) || 0);
     const reqDuration = Math.max(3, Number(duration) || 30);
@@ -46,11 +61,6 @@ function enqueueCutJob(inputFile, start, duration, ratio, res, cleanupInput = fa
     ];
 
     execFile(ffmpegPath, args, (err) => {
-      if (cleanupInput && inputFile !== srcMp4) {
-        try { fs.unlinkSync(inputFile); } catch {}
-      }
-
-      // Verify output MP4 is valid and non-empty (> 10KB) so phone never gets a broken file
       if (!err && fs.existsSync(outPath) && fs.statSync(outPath).size > 10240) {
         res.setHeader('Content-Type', 'video/mp4');
         return res.download(outPath, `Short_${ratio}_${startTime}s_${reqDuration}s.mp4`, () => {
@@ -59,39 +69,19 @@ function enqueueCutJob(inputFile, start, duration, ratio, res, cleanupInput = fa
         });
       } else {
         try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}
-        res.status(500).json({ error: 'FFmpeg encode failed or invalid MP4' });
+        res.status(500).json({ error: 'FFmpeg encode failed' });
         resolve();
       }
     });
   })).catch(() => {});
 }
 
-router.post('/', upload.any(), (req, res) => {
-  const uploaded = req.files?.[0];
-  if (!uploaded || !fs.existsSync(uploaded.path)) {
-    return res.status(400).json({ ok: false });
-  }
-  fs.renameSync(uploaded.path, srcMp4);
-  res.json({ ok: true, status: 'COMPLETED' });
-});
-
 router.get('/cut-fast', (req, res) => {
   const { start = 0, duration = 30, ratio = 'smart' } = req.query;
   if (!fs.existsSync(srcMp4) || fs.statSync(srcMp4).size < 10240) {
     return res.status(404).send('NEED_UPLOAD');
   }
-  enqueueCutJob(srcMp4, start, duration, ratio, res, false);
-});
-
-router.post('/cut-direct', upload.any(), (req, res) => {
-  const { start = 0, duration = 30, ratio = 'smart' } = req.query;
-  const uploaded = req.files?.[0];
-  if (!uploaded || !fs.existsSync(uploaded.path)) {
-    return res.status(400).send('No video file received.');
-  }
-  // Copy to srcMp4 cache so future cuts are fast, and cut from the unique temp file
-  try { fs.copyFileSync(uploaded.path, srcMp4); } catch {}
-  enqueueCutJob(uploaded.path, start, duration, ratio, res, true);
+  enqueueCutJob(srcMp4, start, duration, ratio, res);
 });
 
 module.exports = router;

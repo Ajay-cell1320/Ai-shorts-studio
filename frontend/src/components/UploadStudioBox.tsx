@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 
 const API_BASE = 'https://magicshorts.onrender.com';
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks so large 86MB+ files never stall at 1%
 
 export const UploadStudioBox: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -29,7 +30,7 @@ export const UploadStudioBox: React.FC = () => {
         score: Math.max(88, 99 - i * 2),
         start: Math.floor(start),
         duration: actualDur || dur,
-        cap: i === 1 ? 'Diwali pe har saal aisa hota hai! 😂🔥 #shorts' : i === 2 ? 'Kachua hai wo! 😂🐢 #viral' : 'Wait for the end! 👀✨ #trending'
+        cap: i === 1 ? 'Must watch highlight! 🔥 #shorts' : i === 2 ? 'Wait for this moment! ⚡ #viral' : 'Unbelievable scene! 👀✨ #trending'
       });
       start += dur;
       i++;
@@ -38,26 +39,51 @@ export const UploadStudioBox: React.FC = () => {
     if (generated.length > 0) setActiveClip(generated[0]);
   };
 
-  const uploadOnceInBackground = (f: File) => {
+  const uploadInChunks = async (f: File) => {
     setServerHasFile(false);
     setUploadPct(1);
-    setStatusMsg('⏳ Caching video on server... Once at 100%, multi-downloads are instant!');
-    const fd = new FormData();
-    fd.append('video', f);
+    setStatusMsg('⚡ Waking up cloud server...');
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/api/uploads`, true);
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setUploadPct(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setServerHasFile(true);
-        setUploadPct(100);
-        setStatusMsg('⚡ Server Ready! Tap as many Shorts as you want — they will queue & download cleanly!');
+    try {
+      await fetch(`${API_BASE}/api/uploads/ping`);
+    } catch {}
+
+    const totalChunks = Math.ceil(f.size / CHUNK_SIZE);
+    for (let i = 0; i < totalChunks; i++) {
+      const startByte = i * CHUNK_SIZE;
+      const endByte = Math.min(f.size, startByte + CHUNK_SIZE);
+      const chunkBlob = f.slice(startByte, endByte);
+
+      const fd = new FormData();
+      fd.append('chunk', chunkBlob, f.name);
+
+      setStatusMsg(`⏳ Uploading part ${i + 1} of ${totalChunks} (${Math.round(((i + 0.5) / totalChunks) * 100)}%)...`);
+
+      let success = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await fetch(`${API_BASE}/api/uploads/chunk?index=${i}`, {
+            method: 'POST',
+            body: fd
+          });
+          if (res.ok) {
+            success = true;
+            break;
+          }
+        } catch {}
       }
-    };
-    xhr.send(fd);
+
+      if (!success) {
+        setStatusMsg('❌ Network drop during chunk upload. Tap Retry below.');
+        return;
+      }
+
+      setUploadPct(Math.round(((i + 1) / totalChunks) * 100));
+    }
+
+    setServerHasFile(true);
+    setUploadPct(100);
+    setStatusMsg('✅ 100% Uploaded! Tap any Short below to cut & download in seconds!');
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -72,9 +98,8 @@ export const UploadStudioBox: React.FC = () => {
     tempVideo.onloadedmetadata = () => {
       generateSequentialClips(tempVideo.duration || 60, selectedDuration);
     };
-    uploadOnceInBackground(f);
+    uploadInChunks(f);
   };
-
   const saveValidVideoBlob = (blob: Blob, outFileName: string) => {
     const mp4Blob = new Blob([blob], { type: 'video/mp4' });
     const blobUrl = URL.createObjectURL(mp4Blob);
@@ -89,6 +114,9 @@ export const UploadStudioBox: React.FC = () => {
 
   const triggerClipDownload = async (c: any) => {
     if (!file || downloadingIds[c.id]) return;
+    if (!serverHasFile) {
+      await uploadInChunks(file);
+    }
     setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
     const outFileName = `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`;
 
@@ -98,30 +126,14 @@ export const UploadStudioBox: React.FC = () => {
         const blob = await res.blob();
         if (blob.size > 10240) {
           saveValidVideoBlob(blob, outFileName);
-          setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
-          setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
-          return;
-        }
-      }
-    } catch {}
-
-    // Fallback upload & cut
-    try {
-      const fd = new FormData();
-      fd.append('video', file);
-      const res2 = await fetch(`${API_BASE}/api/uploads/cut-direct?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`, {
-        method: 'POST',
-        body: fd
-      });
-      if (res2.ok) {
-        const blob = await res2.blob();
-        if (blob.size > 10240) {
-          setServerHasFile(true);
-          saveValidVideoBlob(blob, outFileName);
           setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
         } else {
-          setStatusMsg('⚠️ Server returned an incomplete file. Please tap Download again.');
+          setStatusMsg('⚠️ Invalid clip size. Please tap Download again.');
         }
+      } else {
+        setServerHasFile(false);
+        setStatusMsg('⚠️ Server restarted. Re-uploading chunks now...');
+        await uploadInChunks(file);
       }
     } catch {
       setStatusMsg('⚠️ Network error while cutting. Tap Download again.');
@@ -130,7 +142,6 @@ export const UploadStudioBox: React.FC = () => {
   };
 
   const handleDownloadAll = async () => {
-    setStatusMsg('🚀 Queued all Shorts for download! Each clip will save as soon as it finishes encoding...');
     for (const c of clips) {
       await triggerClipDownload(c);
     }
@@ -166,12 +177,12 @@ export const UploadStudioBox: React.FC = () => {
 
       {file && !serverHasFile && (
         <div className="space-y-1 text-xs">
-          <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden">
+          <div className="w-full bg-gray-800 h-2.5 rounded-full overflow-hidden">
             <div className="bg-purple-500 h-full transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
           <div className="flex justify-between text-gray-300">
-            <span>Server Cache Upload: {uploadPct}%</span>
-            <button type="button" onClick={() => uploadOnceInBackground(file)} className="text-purple-400 underline">Retry</button>
+            <span>Chunked Upload Progress: {uploadPct}%</span>
+            <button type="button" onClick={() => uploadInChunks(file)} className="text-purple-400 underline">Retry</button>
           </div>
         </div>
       )}
