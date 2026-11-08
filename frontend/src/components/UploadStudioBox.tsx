@@ -1,14 +1,14 @@
 import React, { useState, useRef } from 'react';
 
 const API_BASE = 'https://magicshorts.onrender.com';
-const CHUNK_SIZE = 512 * 1024; // 512KB micro-chunks so progress updates every second even at 50KB/s!
+const CHUNK_SIZE = 1024 * 1024; // 1MB chunks
 
 export const UploadStudioBox: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(30);
   const [ratioMode, setRatioMode] = useState<'smart' | 'fullfit' | 'zoom'>('smart');
-  const [downloadingIds, setDownloadingIds] = useState<Record<string, boolean>>({});
+  const [downloadingIds, setDownloadingIds] = useState<Record<string, string>>({});
   const [uploadPct, setUploadPct] = useState<number>(0);
   const [serverHasFile, setServerHasFile] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -39,15 +39,15 @@ export const UploadStudioBox: React.FC = () => {
     if (generated.length > 0) setActiveClip(generated[0]);
   };
 
-  const sendChunkWithProgress = (chunkBlob: Blob, fileName: string, index: number, onChunkProgress: (loaded: number) => void) => {
+  const sendChunkWithProgress = (chunkBlob: Blob, fileName: string, index: number, onProgress: (loaded: number) => void) => {
     return new Promise<boolean>((resolve) => {
       const fd = new FormData();
       fd.append('chunk', chunkBlob, fileName);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${API_BASE}/api/uploads/chunk?index=${index}`, true);
-      xhr.timeout = 45000;
+      xhr.timeout = 30000;
       xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) onChunkProgress(e.loaded);
+        if (e.lengthComputable) onProgress(e.loaded);
       };
       xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
       xhr.onerror = () => resolve(false);
@@ -58,10 +58,15 @@ export const UploadStudioBox: React.FC = () => {
 
   const uploadInChunks = async (f: File) => {
     setServerHasFile(false);
-    setUploadPct(1);
-    setStatusMsg('⚡ Connecting to server (or use Instant Phone Cut below with 0% upload!)...');
+    setUploadPct(2);
+    setStatusMsg('✅ Ready! Tap any green button below to cut & download immediately (no need to wait for cloud sync!)');
 
-    try { await fetch(`${API_BASE}/api/uploads/ping`); } catch {}
+    // Non-blocking 3.5-second ping timeout so it NEVER gets stuck on "Waking up cloud server..."
+    try {
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 3500);
+      await fetch(`${API_BASE}/api/uploads/ping`, { signal: ctrl.signal });
+    } catch {}
 
     const totalChunks = Math.ceil(f.size / CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
@@ -69,22 +74,23 @@ export const UploadStudioBox: React.FC = () => {
       const endByte = Math.min(f.size, startByte + CHUNK_SIZE);
       const chunkBlob = f.slice(startByte, endByte);
 
-      const ok = await sendChunkWithProgress(chunkBlob, f.name, i, (loadedInChunk) => {
-        const totalUploadedBytes = startByte + loadedInChunk;
-        const exactPct = Math.max(1, Math.min(99, Math.round((totalUploadedBytes / f.size) * 100)));
-        setUploadPct(exactPct);
-        setStatusMsg(`⏳ Cloud Sync: ${(totalUploadedBytes / 1048576).toFixed(1)} MB / ${(f.size / 1048576).toFixed(1)} MB (${exactPct}%)`);
+      const ok = await sendChunkWithProgress(chunkBlob, f.name, i, (loaded) => {
+        const totalSent = startByte + loaded;
+        const pct = Math.max(2, Math.min(99, Math.round((totalSent / f.size) * 100)));
+        setUploadPct(pct);
       });
 
       if (!ok) {
-        setStatusMsg('⚠️ Slow mobile upload paused. Use "⚡ Instant Phone Cut (No Upload)" below!');
-        return;
+        // Retry once after 2s if Render was still waking up
+        await new Promise((r) => setTimeout(r, 2000));
+        const okRetry = await sendChunkWithProgress(chunkBlob, f.name, i, () => {});
+        if (!okRetry) return;
       }
     }
 
     setServerHasFile(true);
     setUploadPct(100);
-    setStatusMsg('✅ 100% Cloud Synced! Both Cloud FFmpeg & Instant Phone Cut are ready.');
+    setStatusMsg('⚡ 100% Cloud Cached! Instant 2-second FFmpeg server cuts unlocked!');
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,23 +107,20 @@ export const UploadStudioBox: React.FC = () => {
     };
     uploadInChunks(f);
   };
-  const saveValidVideoBlob = (blob: Blob, outFileName: string) => {
-    const blobUrl = URL.createObjectURL(blob);
+  const saveBlob = (blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = outFileName;
+    a.href = url;
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
   };
 
-  // Cuts 9:16 vertical video + burns yellow caption locally on phone with ZERO internet upload!
-  const cutLocallyOnPhone = async (c: any) => {
+  // Cuts 9:16 video on phone in real-time with ZERO server upload wait
+  const cutOnPhoneDevice = async (c: any) => {
     if (!previewUrl || downloadingIds[c.id]) return;
-    setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
-    setStatusMsg(`📱 Cutting 9:16 Short #${c.id} directly on your phone (Zero internet upload)...`);
-
     const vid = document.createElement('video');
     vid.src = previewUrl;
     vid.muted = false;
@@ -132,10 +135,9 @@ export const UploadStudioBox: React.FC = () => {
     const stream = (canvas as any).captureStream(30);
     try {
       const audioCtx = new AudioContext();
-      const source = audioCtx.createMediaElementSource(vid);
+      const src = audioCtx.createMediaElementSource(vid);
       const dest = audioCtx.createMediaStreamDestination();
-      source.connect(dest);
-      source.connect(audioCtx.destination);
+      src.connect(dest);
       dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
     } catch {}
 
@@ -150,20 +152,22 @@ export const UploadStudioBox: React.FC = () => {
     recorder.start(200);
     await vid.play();
 
-    const drawFrame = () => {
+    const draw = () => {
       if (vid.paused || vid.ended || vid.currentTime >= c.start + c.duration) {
         if (recorder.state === 'recording') recorder.stop();
         vid.pause();
         return;
       }
-      // Background fill
+      const elapsed = Math.max(0, vid.currentTime - c.start);
+      const pct = Math.min(99, Math.round((elapsed / c.duration) * 100));
+      setDownloadingIds((prev) => ({ ...prev, [c.id]: `⚡ Cutting 9:16 Video: ${pct}%` }));
+
       ctx.fillStyle = '#0b0c16';
       ctx.fillRect(0, 0, 720, 1280);
-      ctx.filter = 'blur(18px) brightness(0.45)';
+      ctx.filter = 'blur(16px) brightness(0.45)';
       ctx.drawImage(vid, -180, 0, 1080, 1280);
       ctx.filter = 'none';
 
-      // Foreground 9:16 framing
       const vw = vid.videoWidth || 1280;
       const vh = vid.videoHeight || 720;
       if (ratioMode === 'zoom') {
@@ -178,7 +182,6 @@ export const UploadStudioBox: React.FC = () => {
         ctx.drawImage(vid, (720 - vw * s) / 2, (1280 - targetH) / 2, vw * s, targetH);
       }
 
-      // Burned-in viral caption bar
       ctx.fillStyle = 'rgba(0,0,0,0.82)';
       ctx.fillRect(40, 1040, 640, 64);
       ctx.fillStyle = '#fde047';
@@ -186,17 +189,16 @@ export const UploadStudioBox: React.FC = () => {
       ctx.textAlign = 'center';
       ctx.fillText(c.cap, 360, 1080);
 
-      requestAnimationFrame(drawFrame);
+      requestAnimationFrame(draw);
     };
-    drawFrame();
+    draw();
 
     await new Promise<void>((resolve) => {
       recorder.onstop = () => {
-        const ext = mime.includes('mp4') ? 'mp4' : 'mp4';
         const outBlob = new Blob(chunks, { type: mime });
-        saveValidVideoBlob(outBlob, `Short_9x16_${c.start}s_${c.duration}s.${ext}`);
-        setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
-        setStatusMsg(`✅ Saved 9:16 Short with burned captions directly on your phone!`);
+        saveBlob(outBlob, `Short_9x16_${c.start}s_${c.duration}s.mp4`);
+        setDownloadingIds((prev) => { const n = { ...prev }; delete n[c.id]; return n; });
+        setStatusMsg(`✅ Downloaded Short (${c.start}s-${c.start + c.duration}s) to your phone!`);
         resolve();
       };
     });
@@ -205,22 +207,24 @@ export const UploadStudioBox: React.FC = () => {
   const triggerClipDownload = async (c: any) => {
     if (!file || downloadingIds[c.id]) return;
     if (!serverHasFile) {
-      return cutLocallyOnPhone(c);
+      return cutOnPhoneDevice(c);
     }
-    setDownloadingIds((prev) => ({ ...prev, [c.id]: true }));
-    const outFileName = `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`;
+    setDownloadingIds((prev) => ({ ...prev, [c.id]: '⚡ Cloud FFmpeg Cutting...' }));
     try {
       const res = await fetch(`${API_BASE}/api/uploads/cut-fast?start=${c.start}&duration=${c.duration}&ratio=${ratioMode}`);
       if (res.ok) {
         const blob = await res.blob();
-        if (blob.size > 10240) {
-          saveValidVideoBlob(blob, outFileName);
-          setStatusMsg(`✅ Downloaded ${outFileName} (${(blob.size / 1048576).toFixed(1)} MB)`);
+        if (blob.size > 5000) {
+          saveBlob(new Blob([blob], { type: 'video/mp4' }), `Short_${ratioMode}_${c.start}s_${c.duration}s.mp4`);
+          setDownloadingIds((prev) => { const n = { ...prev }; delete n[c.id]; return n; });
+          setStatusMsg(`✅ Downloaded Cloud FFmpeg Short!`);
+          return;
         }
       }
     } catch {}
-    setDownloadingIds((prev) => ({ ...prev, [c.id]: false }));
+    return cutOnPhoneDevice(c);
   };
+
   return (
     <div className="bg-[#111322] border border-white/10 rounded-2xl p-4 text-white space-y-4">
       <div className="space-y-1.5">
@@ -255,8 +259,8 @@ export const UploadStudioBox: React.FC = () => {
             <div className="bg-purple-500 h-full transition-all" style={{ width: `${uploadPct}%` }} />
           </div>
           <div className="flex justify-between text-gray-300">
-            <span>Cloud Upload Progress: {uploadPct}%</span>
-            <button type="button" onClick={() => uploadInChunks(file)} className="text-purple-400 underline">Retry Cloud</button>
+            <span>Background Cloud Sync: {uploadPct}% (Optional)</span>
+            <button type="button" onClick={() => uploadInChunks(file)} className="text-purple-400 underline">Retry</button>
           </div>
         </div>
       )}
@@ -277,7 +281,7 @@ export const UploadStudioBox: React.FC = () => {
           </div>
 
           {clips.map((c) => {
-            const isBusy = !!downloadingIds[c.id];
+            const busyText = downloadingIds[c.id];
             return (
               <div key={c.id} onClick={() => { setActiveClip(c); if (videoRef.current) { videoRef.current.currentTime = c.start; videoRef.current.play(); } }} className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer ${activeClip?.id === c.id ? 'border-purple-500 bg-purple-950/40' : 'border-white/10 bg-[#0b0c16]'}`}>
                 <div className="flex justify-between font-bold">
@@ -289,14 +293,10 @@ export const UploadStudioBox: React.FC = () => {
                   type="button"
                   onClick={(e) => { e.stopPropagation(); triggerClipDownload(c); }}
                   className={`w-full py-2.5 rounded-lg font-bold text-center text-white transition ${
-                    isBusy ? 'bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-500'
+                    busyText ? 'bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
                 >
-                  {isBusy
-                    ? '⚡ Cutting 9:16 Video Now...'
-                    : serverHasFile
-                    ? `⬇ Cloud FFmpeg Cut (${c.duration}s)`
-                    : `⚡ Instant Phone Cut ${c.duration}s (No Upload Wait!)`}
+                  {busyText ? busyText : serverHasFile ? `⬇ Cloud FFmpeg Cut (${c.duration}s)` : `⚡ Instant Cut & Download ${c.duration}s Short`}
                 </button>
               </div>
             );
